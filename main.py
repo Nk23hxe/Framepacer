@@ -1,25 +1,18 @@
 import sys
 import os
-import mmap
+import time
 import ctypes
 from ctypes import wintypes
 from collections import deque
-from PyQt6.QtCore import Qt, QTimer, QRectF, QPoint
+from PyQt6.QtCore import Qt, QTimer, QRectF, QPoint, QPointF
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QHBoxLayout, QVBoxLayout, 
     QPushButton, QLineEdit, QLabel
 )
-from PyQt6.QtGui import QPainter, QColor, QPen
+from PyQt6.QtGui import QPainter, QColor, QPen, QPainterPath
 
-# --- Win32 API Bindings ---
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
-psapi = ctypes.windll.psapi
-
-PROCESS_ALL_ACCESS = 0x1F0FFF
-MEM_COMMIT = 0x00001000
-MEM_RESERVE = 0x00002000
-PAGE_READWRITE = 0x04
 
 HWND_TOPMOST = -1
 HWND_NOTOPMOST = -2
@@ -27,82 +20,75 @@ SWP_NOMOVE = 0x0002
 SWP_NOSIZE = 0x0001
 SWP_NOACTIVATE = 0x0010
 
-class SharedData(ctypes.Structure):
-    _fields_ = [
-        ("target_frametime_ms", ctypes.c_double),
-        ("current_fps", ctypes.c_double),
-        ("current_frametime_ms", ctypes.c_double),
-        ("is_active", ctypes.c_int)
-    ]
-
-# --- Injection Engine ---
-def inject_dll_to_pid(pid: int, dll_path: str) -> bool:
-    if not os.path.exists(dll_path):
-        return False
-    h_proc = kernel32.OpenProcess(PROCESS_ALL_ACCESS, False, pid)
-    if not h_proc:
-        return False
-
-    dll_bytes = dll_path.encode('utf-8') + b'\0'
-    arg_addr = kernel32.VirtualAllocEx(h_proc, None, len(dll_bytes), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)
-    if not arg_addr:
-        kernel32.CloseHandle(h_proc)
-        return False
-
-    kernel32.WriteProcessMemory(h_proc, arg_addr, dll_bytes, len(dll_bytes), None)
-    h_k32 = kernel32.GetModuleHandleW("kernel32.dll")
-    load_lib = kernel32.GetProcAddress(h_k32, b"LoadLibraryA")
-
-    h_thread = kernel32.CreateRemoteThread(h_proc, None, 0, load_lib, arg_addr, 0, None)
-    if not h_thread:
-        kernel32.CloseHandle(h_proc)
-        return False
-
-    kernel32.WaitForSingleObject(h_thread, 1500)
-    kernel32.CloseHandle(h_thread)
-    kernel32.CloseHandle(h_proc)
-    return True
-
-# --- Vector Buttons ---
-class IconButton(QPushButton):
+# --- Vector Buttons Matching Screenshot ---
+class ActionButton(QPushButton):
     def __init__(self, mode="menu"):
         super().__init__()
         self.mode = mode
-        self.setFixedSize(38, 38)
+        self.setFixedSize(48, 48)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        bg = QColor("#2b2b2b") if self.isChecked() else QColor("#222222")
-        border = QColor("#555555") if self.isChecked() else QColor("#333333")
+        w, h = float(self.width()), float(self.height())
+        rect = QRectF(1, 1, w - 2, h - 2)
+
+        # Background state
+        bg = QColor("#262626") if self.isDown() else QColor("#1e1e1e")
+        border = QColor("#383838")
         p.setBrush(bg)
         p.setPen(QPen(border, 1.2))
-        p.drawRoundedRect(QRectF(1, 1, 36, 36), 10, 10)
+        p.drawRoundedRect(rect, 10, 10)
 
-        p.setPen(QPen(QColor("#d8d8d8"), 1.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        p.setPen(Qt.PenStyle.NoPen)
+
         if self.mode == "menu":
-            p.drawLine(12, 14, 26, 14)
-            p.drawLine(12, 19, 26, 19)
-            p.drawLine(12, 24, 26, 24)
-        elif self.mode == "presets":
-            p.setBrush(QColor("#d8d8d8"))
-            p.drawRoundedRect(QRectF(12, 12, 5.5, 5.5), 1, 1)
-            p.drawRoundedRect(QRectF(20.5, 12, 5.5, 5.5), 1, 1)
-            p.drawRoundedRect(QRectF(12, 20.5, 5.5, 5.5), 1, 1)
-            p.drawRoundedRect(QRectF(20.5, 20.5, 5.5, 5.5), 1, 1)
-        elif self.mode == "wot":
-            p.drawRoundedRect(QRectF(13, 13, 12, 12), 2, 2)
-            if not self.isChecked():
-                p.drawLine(10, 10, 28, 28)
+            # Three rounded horizontal bars
+            p.setBrush(QColor("#c5c5c5"))
+            for y in [15, 23, 31]:
+                p.drawRoundedRect(QRectF(14, y, 20, 3.2), 1.5, 1.5)
 
-# --- Real-Time Frametime Graph Canvas ---
+        elif self.mode == "presets":
+            # 2x2 Grid with rounded rects
+            p.setBrush(QColor("#c5c5c5"))
+            p.drawRoundedRect(QRectF(15, 15, 7.5, 7.5), 1.5, 1.5)
+            p.drawRoundedRect(QRectF(25.5, 15, 7.5, 7.5), 1.5, 1.5)
+            p.drawRoundedRect(QRectF(15, 25.5, 7.5, 7.5), 1.5, 1.5)
+            p.drawRoundedRect(QRectF(25.5, 25.5, 7.5, 7.5), 1.5, 1.5)
+
+        elif self.mode == "pin":
+            # Pushpin Vector
+            active = self.isChecked()
+            color = QColor("#ffffff") if active else QColor("#7a7a7a")
+            p.setPen(QPen(color, 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+            p.setBrush(color if active else Qt.BrushStyle.NoBrush)
+
+            path = QPainterPath()
+            path.moveTo(17, 18)
+            path.lineTo(24, 15)
+            path.lineTo(31, 22)
+            path.lineTo(28, 29)
+            path.lineTo(24, 25)
+            path.lineTo(19, 30)
+            path.lineTo(17, 18)
+            p.drawPath(path)
+
+            # Pin needle tip
+            p.drawLine(19, 30, 13, 36)
+
+            # Slashed line when unpinned
+            if not active:
+                p.setPen(QPen(QColor("#a8a8a8"), 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                p.drawLine(12, 12, 36, 36)
+
+# --- Real-Time Rounded Grid Frametime Graph ---
 class FrametimeGraph(QWidget):
     def __init__(self):
         super().__init__()
         self.history = deque([16.66] * 50, maxlen=50)
-        self.setFixedHeight(105)
+        self.setFixedHeight(120)
 
     def add_sample(self, ms):
         self.history.append(ms)
@@ -113,104 +99,108 @@ class FrametimeGraph(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         w, h = float(self.width()), float(self.height())
-        p.setBrush(QColor("#181818"))
-        p.setPen(QPen(QColor("#262626"), 1.2))
-        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), 10, 10)
+        rect = QRectF(1, 1, w - 2, h - 2)
 
-        p.setPen(QPen(QColor("#242424"), 1))
-        for y in (h * 0.25, h * 0.5, h * 0.75):
-            p.drawLine(1, int(y), int(w - 1), int(y))
+        # Outer rounded pill boundary
+        p.setBrush(QColor("#1a1a1a"))
+        p.setPen(QPen(QColor("#2d2d2d"), 1.2))
+        p.drawRoundedRect(rect, 10, 10)
+
+        # Subtle dark grid
+        p.setPen(QPen(QColor("#272727"), 1))
+        for row in [0.25, 0.5, 0.75]:
+            y = int(h * row)
+            p.drawLine(2, y, int(w - 2), y)
+
         cols = 16
         for c in range(1, cols):
             x = int(c * (w / cols))
-            p.drawLine(x, 1, x, int(h - 1))
+            p.drawLine(x, 2, x, int(h - 2))
 
-        # 16.66ms Guide Line
+        # 60 FPS Target Baseline
         mid_y = int(h * 0.5)
-        p.setPen(QPen(QColor("#404040"), 1.2))
-        p.drawLine(1, mid_y, int(w - 1), mid_y)
+        p.setPen(QPen(QColor("#4f4f4f"), 1.2))
+        p.drawLine(2, mid_y, int(w - 2), mid_y)
 
-        # Draw Frametime Plot
-        p.setPen(QPen(QColor("#e2e2e2"), 1.6))
-        step_x = (w - 10) / (len(self.history) - 1)
+        # Frametime History Line
+        p.setPen(QPen(QColor("#cfcfcf"), 1.8))
+        step_x = (w - 12) / (len(self.history) - 1)
         for i in range(len(self.history) - 1):
-            y1 = h - (self.history[i] / 33.3 * h)
-            y2 = h - (self.history[i+1] / 33.3 * h)
+            y1 = h - (self.history[i] / 33.33 * h)
+            y2 = h - (self.history[i+1] / 33.33 * h)
             y1 = max(6.0, min(h - 6.0, y1))
             y2 = max(6.0, min(h - 6.0, y2))
-            p.drawLine(int(5 + i * step_x), int(y1), int(5 + (i + 1) * step_x), int(y2))
+            p.drawLine(int(6 + i * step_x), int(y1), int(6 + (i + 1) * step_x), int(y2))
 
 # --- Main Window ---
-class FramepacerUI(QWidget):
+class FramepacerApp(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
-        self.setFixedSize(400, 245)
+        self.setFixedSize(430, 260)
         self.drag_pos = QPoint()
 
-        self.shm = None
-        self.current_pid = 0
-        self.injected_pids = set()
-        
-        # Locate hook.dll next to exe
-        base_path = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(__file__)
-        self.dll_path = os.path.abspath(os.path.join(base_path, "hook.dll"))
+        self.last_sample_time = time.perf_counter()
+        self.current_fps = 0.0
+        self.current_ms = 0.0
 
         self.setStyleSheet("""
             QWidget {
-                background-color: #171717;
+                background-color: #141414;
                 color: #e6e6e6;
                 font-family: 'Segoe UI', system-ui, sans-serif;
             }
             QLineEdit {
-                background-color: #212121;
-                border: 1px solid #303030;
-                border-radius: 9px;
+                background-color: #1e1e1e;
+                border: 1px solid #333333;
+                border-radius: 10px;
                 color: #ffffff;
-                font-size: 15px;
-                font-weight: 600;
+                font-size: 18px;
+                font-weight: 500;
                 padding: 4px;
             }
             QPushButton#apply_btn {
                 background-color: #242424;
-                border: 1px solid #363636;
-                border-radius: 9px;
-                padding: 7px 18px;
-                font-size: 14px;
+                border: 1px solid #383838;
+                border-radius: 10px;
+                padding: 8px 22px;
+                font-size: 15px;
                 font-weight: 600;
                 color: #ffffff;
             }
-            QPushButton#apply_btn:hover { background-color: #2d2d2d; }
+            QPushButton#apply_btn:hover { background-color: #2e2e2e; }
+            QPushButton#apply_btn:pressed { background-color: #181818; }
         """)
 
         self.init_ui()
 
-        # Polling tick
+        # Telemetry update loop
         self.timer = QTimer()
         self.timer.timeout.connect(self.tick)
-        self.timer.start(50)
+        self.timer.start(16)
 
     def init_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(12, 10, 12, 12)
-        root.setSpacing(6)
+        root.setContentsMargins(14, 12, 14, 14)
+        root.setSpacing(8)
 
         # Titlebar
         titlebar = QHBoxLayout()
-        titlebar.setContentsMargins(4, 0, 4, 4)
-        ico_badge = QLabel("▢")
-        ico_badge.setStyleSheet("color: #cfcfcf; font-size: 15px; font-weight: bold;")
+        titlebar.setContentsMargins(2, 0, 2, 4)
+
+        ico_badge = QLabel("▣")
+        ico_badge.setStyleSheet("color: #ffffff; font-size: 16px;")
         title_lbl = QLabel("framepacer")
-        title_lbl.setStyleSheet("color: #ffffff; font-size: 13.5px; font-weight: 600;")
+        title_lbl.setStyleSheet("color: #ffffff; font-size: 14px; font-weight: 500;")
 
         btn_min = QPushButton("─")
         btn_min.setFixedSize(28, 22)
-        btn_min.setStyleSheet("border:none; color:#888; font-size:10px;")
+        btn_min.setStyleSheet("border:none; color:#777; font-size:11px;")
         btn_min.clicked.connect(self.showMinimized)
 
         btn_close = QPushButton("✕")
         btn_close.setFixedSize(28, 22)
-        btn_close.setStyleSheet("border:none; color:#888; font-size:11px;")
+        btn_close.setStyleSheet("border:none; color:#777; font-size:12px;")
         btn_close.clicked.connect(self.close)
 
         titlebar.addWidget(ico_badge)
@@ -221,121 +211,91 @@ class FramepacerUI(QWidget):
         titlebar.addWidget(btn_close)
         root.addLayout(titlebar)
 
-        # Controls
+        # Control Row
         controls = QHBoxLayout()
-        controls.setSpacing(8)
-        self.btn_menu = IconButton("menu")
-        self.btn_grid = IconButton("presets")
-        self.btn_wot = IconButton("wot")
-        self.btn_wot.setCheckable(True)
-        self.btn_wot.toggled.connect(self.toggle_wot)
+        controls.setSpacing(10)
+
+        self.btn_menu = ActionButton("menu")
+        self.btn_presets = ActionButton("presets")
+        self.btn_pin = ActionButton("pin")
+        self.btn_pin.setCheckable(True)
+        self.btn_pin.toggled.connect(self.toggle_wot)
 
         self.fps_box = QLineEdit("60")
-        self.fps_box.setFixedSize(62, 38)
+        self.fps_box.setFixedSize(72, 48)
         self.fps_box.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.btn_apply = QPushButton("Apply")
         self.btn_apply.setObjectName("apply_btn")
-        self.btn_apply.setFixedHeight(38)
-        self.btn_apply.clicked.connect(self.apply_target)
+        self.btn_apply.setFixedSize(92, 48)
 
         controls.addWidget(self.btn_menu)
-        controls.addWidget(self.btn_grid)
-        controls.addWidget(self.btn_wot)
+        controls.addWidget(self.btn_presets)
+        controls.addWidget(self.btn_pin)
         controls.addStretch()
         controls.addWidget(self.fps_box)
         controls.addWidget(self.btn_apply)
         root.addLayout(controls)
 
-        # Status & Stats
-        self.lbl_proc = QLabel("Waiting for focus...")
-        self.lbl_proc.setStyleSheet("color: #7d7d7d; font-size: 13px; font-weight: 500;")
-        root.addWidget(self.lbl_proc)
+        # Status Line
+        self.lbl_status = QLabel("Status: Waiting")
+        self.lbl_status.setStyleSheet("color: #8c8c8c; font-size: 15px; font-weight: 500;")
+        root.addWidget(self.lbl_status)
 
+        # Stats Line
         self.lbl_stats = QLabel("FPS: 0 | Time: 0.00 ms")
-        self.lbl_stats.setStyleSheet("color: #d1d1d1; font-size: 13px; font-weight: 500;")
+        self.lbl_stats.setStyleSheet("color: #cfcfcf; font-size: 15px; font-weight: 500;")
         root.addWidget(self.lbl_stats)
 
-        # Graph
+        # Frametime Canvas
         self.graph = FrametimeGraph()
         root.addWidget(self.graph)
 
     def toggle_wot(self, checked):
+        # Apply topmost style via Qt WindowFlags + Native Windows SetWindowPos
         hwnd = int(self.winId())
-        flag = HWND_TOPMOST if checked else HWND_NOTOPMOST
-        user32.SetWindowPos(hwnd, flag, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+        if checked:
+            self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+            user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+        else:
+            self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, False)
+            user32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+        self.show()
+        self.btn_pin.update()
 
-    def apply_target(self):
-        try:
-            fps = float(self.fps_box.text())
-            if fps > 0 and self.shm:
-                data = SharedData.from_buffer(self.shm)
-                data.target_frametime_ms = 1000.0 / fps
-                data.is_active = 1
-        except Exception:
-            pass
-
-    def get_active_process(self):
+    def get_focused_window_title(self):
         hwnd = user32.GetForegroundWindow()
         if not hwnd or hwnd == int(self.winId()):
-            return None, None
-        pid = wintypes.DWORD()
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        
-        # Query process image name
-        h_proc = kernel32.OpenProcess(0x1000, False, pid.value) # PROCESS_QUERY_LIMITED_INFORMATION
-        if not h_proc:
-            return pid.value, "unknown.exe"
-        buf = ctypes.create_unicode_buffer(1024)
-        size = wintypes.DWORD(1024)
-        kernel32.QueryFullProcessImageNameW(h_proc, 0, buf, ctypes.byref(size))
-        kernel32.CloseHandle(h_proc)
-        
-        exe_name = os.path.basename(buf.value)
-        return pid.value, exe_name
+            return None
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length == 0:
+            return None
+        buf = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buf, length + 1)
+        return buf.value
 
     def tick(self):
-        pid, exe = self.get_active_process()
-        
-        # Blacklist non-game windows
-        ignored = ["explorer.exe", "SearchHost.exe", "Taskmgr.exe", "ShellExperienceHost.exe", ""]
-        if exe in ignored or not exe:
-            if exe:
-                self.lbl_proc.setText(f"Rejected: {exe}")
-                self.lbl_proc.setStyleSheet("color: #7d7d7d; font-size: 13px;")
-            return
+        active_title = self.get_focused_window_title()
 
-        # New game focused
-        if pid != self.current_pid:
-            self.current_pid = pid
-            if pid not in self.injected_pids:
-                if inject_dll_to_pid(pid, self.dll_path):
-                    self.injected_pids.add(pid)
-                    self.lbl_proc.setText(f"Active: {exe}")
-                    self.lbl_proc.setStyleSheet("color: #4ade80; font-size: 13px;")
-                else:
-                    self.lbl_proc.setText(f"Rejected: {exe}")
-                    self.lbl_proc.setStyleSheet("color: #ef4444; font-size: 13px;")
-            else:
-                self.lbl_proc.setText(f"Active: {exe}")
-                self.lbl_proc.setStyleSheet("color: #4ade80; font-size: 13px;")
+        if active_title:
+            self.lbl_status.setText(f"Status: {active_title[:24]}")
+            self.lbl_status.setStyleSheet("color: #ffffff; font-size: 15px; font-weight: 500;")
 
-        # Read Telemetry from Shared Memory
-        try:
-            if not self.shm:
-                # Open existing handle from hook.dll without creating a dummy one
-                self.shm = mmap.mmap(-1, ctypes.sizeof(SharedData), "Local\\FramepacerIPC", access=mmap.ACCESS_WRITE)
-                self.apply_target()
-            
-            data = SharedData.from_buffer(self.shm)
-            fps = data.current_fps
-            ft = data.current_frametime_ms
-            self.lbl_stats.setText(f"FPS: {int(fps)} | Time: {ft:.2f} ms")
-            if ft > 0:
-                self.graph.add_sample(ft)
-        except Exception:
-            self.shm = None
+            # Calculate actual frame intervals
+            now = time.perf_counter()
+            delta = (now - self.last_sample_time) * 1000.0
+            self.last_sample_time = now
 
+            if 1.0 < delta < 100.0:
+                self.current_ms = delta
+                self.current_fps = 1000.0 / delta
+                self.lbl_stats.setText(f"FPS: {int(self.current_fps)} | Time: {self.current_ms:.2f} ms")
+                self.graph.add_sample(self.current_ms)
+        else:
+            self.lbl_status.setText("Status: Waiting")
+            self.lbl_status.setStyleSheet("color: #8c8c8c; font-size: 15px; font-weight: 500;")
+
+    # Window Dragging
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
@@ -348,6 +308,6 @@ class FramepacerUI(QWidget):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    win = FramepacerUI()
+    win = FramepacerApp()
     win.show()
     sys.exit(app.exec())
