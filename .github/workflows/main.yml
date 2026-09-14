@@ -1,4 +1,4 @@
-name: Build DLL
+name: Build Complete App
 
 on: [push, workflow_dispatch]
 
@@ -18,8 +18,27 @@ jobs:
         run: |
           cl.exe /LD /O2 /EHsc hook.cpp libMinHook.x64.lib user32.lib d3d11.lib dxgi.lib winmm.lib /Fe:hook.dll
 
-      - name: Upload Binary Artifact
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          pip install PyQt6 pyinstaller
+
+      - name: Package Standalone EXE
+        run: |
+          pyinstaller --noconsole --onefile main.py -n "Framepacer"
+
+      - name: Bundle Executable and DLL
+        run: |
+          mkdir release
+          move dist\Framepacer.exe release\
+          move hook.dll release\
+
+      - name: Upload Finished App
         uses: actions/upload-artifact@v4
         with:
-          name: compiled-hook-dll
-          path: hook.dll
+          name: Framepacer-App
+          path: release/
