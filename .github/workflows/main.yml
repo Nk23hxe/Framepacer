@@ -1,0 +1,25 @@
+name: Build DLL
+
+on: [push, workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add MSVC to PATH
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Compile 64-bit DLL
+        run: |
+          cl.exe /LD /O2 /EHsc hook.cpp libMinHook.x64.lib user32.lib d3d11.lib dxgi.lib winmm.lib /Fe:hook.dll
+
+      - name: Upload Binary Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiled-hook-dll
+          path: hook.dll
